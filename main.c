@@ -36,6 +36,7 @@ static struct {
 	.volume = 0.5,
 	.agent = "raop_play",
 	.playing = STOPPED,
+	.deadtime = 60,
 };
 //-----------------------------------------------------------------------------
 static void start_airport(void) {
