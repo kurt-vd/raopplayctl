@@ -137,6 +137,7 @@ static int connection(struct urllisten *url, int fd) {
 	ph = pollh_new("client", urllisten_remote(url));
 	pollh_set_fd(ph, fd);
 	pollh_set_handler(ph, EV_RD, client_read);
+	pollh_mod_event(ph, EV_RD, 1);
 	pollh_add(ph);
 	return 0;
 }
@@ -145,6 +146,8 @@ static void sighandler(int sig) {
 	int status;
 
 	switch (sig) {
+	case SIGALRM:
+		break;
 	case SIGCHLD:
 		// raop_play failed
 		waitpid(-1, &status, WNOHANG);
@@ -163,7 +166,7 @@ static void sighandler(int sig) {
 	}
 }
 static const int sigs[] = {
-	SIGCHLD, SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2, 0, };
+	SIGALRM, SIGCHLD, SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2, 0, };
 //-----------------------------------------------------------------------------
 static struct argp argp;
 int main (int argc, char *argv[]) {
@@ -171,6 +174,8 @@ int main (int argc, char *argv[]) {
 
 	pollcore_init();
 	ustl_init();
+	pollcore_start();
+
 	ret = argp_parse(&argp, argc, argv, ARGP_IN_ORDER, 0, &s);
 	if (ret)
 		return 1;
@@ -181,8 +186,7 @@ int main (int argc, char *argv[]) {
 	if (ret < 0)
 		error(1, errno, "failed to create socket");
 
-	pollcore_signal_handler(sigs, sighandler, 1);
-	pollcore_start();
+	pollcore_signal_handler(sigs, sighandler, 0);
 	start_airport();
 
 	while (!s.sig.term) {
