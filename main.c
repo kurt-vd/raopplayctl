@@ -119,7 +119,7 @@ static int client_read(struct pollh *ph) {
 		if (arg.c > 1)
 			set_volume(strtod(arg.v[1], 0));
 		else
-			dprintf(fd, "%.0lf\n", s.volume *100);
+			dprintf(fd, "%.3lf\n", s.volume);
 	} else if (!strcmp(arg.v[0], "stop")) {
 		set_stop();
 	} else if (!strcmp(arg.v[0], "start")) {
