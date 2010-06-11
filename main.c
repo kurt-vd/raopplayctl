@@ -21,6 +21,9 @@ static struct {
 	const char *agent;
 	const char *fifo;
 
+	char *stopcmd;
+	const char *default_stopcmd;
+
 	int pid;
 	int sk[2];
 	double volume;
@@ -33,10 +36,11 @@ static struct {
 #define PENDING	2
 #define STOPPED	3
 }s = {
-	.volume = 0.5,
+	.volume = 1,
 	.agent = "raop_play",
-	.playing = STOPPED,
+	.playing = PLAYING,
 	.deadtime = 60,
+	.default_stopcmd = "pause",
 };
 //-----------------------------------------------------------------------------
 static void start_airport(void) {
@@ -58,11 +62,23 @@ static void start_airport(void) {
 	s.pid = ret;
 }
 //-----------------------------------------------------------------------------
+static int set_volume(double volume) {
+	if (volume < 0)
+		volume = 0;
+	else if (volume > 1)
+		volume = 1;
+	s.volume = volume;
+	if (!s.pid)
+		return 0;
+	return dprintf(s.sk[0], "volume %.0lf\n", s.volume *100);
+}
+//-----------------------------------------------------------------------------
 static void timed_stop(void *vp) {
-	dprintf(s.sk[0], "stop\n");
+	const char *cmd = s.stopcmd ?: s.default_stopcmd;
+	dprintf(s.sk[0], "%s\n", cmd);
 	s.playing = STOPPED;
 	if (s.verbose)
-		error(0, 0, "stopped %s", s.airport);
+		error(0, 0, "%s %s", cmd, s.airport);
 }
 //-----------------------------------------------------------------------------
 static void set_stop(void) {
@@ -70,15 +86,25 @@ static void set_stop(void) {
 		return;
 	s.playing = PENDING;
 	ustl_add_timeout(s.deadtime, timed_stop, 0);
+	if (s.verbose)
+		error(0, 0, "stop in %.1lf seconds", s.deadtime);
 }
 //-----------------------------------------------------------------------------
 static void set_play(void) {
+	if (!s.pid) {
+		start_airport();
+		s.playing = PLAYING;
+		set_volume(s.volume);
+		return;
+	}
 	switch (s.playing) {
 	case PLAYING:
 		break;
 	case PENDING:
 	default:
 		ustl_remove_timeout(timed_stop, 0);
+		if (s.verbose)
+			error(0, 0, "removed pending stop");
 		break;
 	case STOPPED:
 		dprintf(s.sk[0], "play %s\n", s.fifo);
@@ -87,15 +113,6 @@ static void set_play(void) {
 		break;
 	}
 	s.playing = PLAYING;
-}
-//-----------------------------------------------------------------------------
-static int set_volume(double volume) {
-	if (volume < 0)
-		volume = 0;
-	else if (volume > 1)
-		volume = 1;
-	s.volume = volume;
-	return dprintf(s.sk[0], "volume %.0lf\n", s.volume *100);
 }
 //-----------------------------------------------------------------------------
 static int client_read(struct pollh *ph) {
@@ -124,6 +141,18 @@ static int client_read(struct pollh *ph) {
 		set_stop();
 	} else if (!strcmp(arg.v[0], "start")) {
 		set_play();
+	} else if (!strcmp(arg.v[0], "time")) {
+		if (arg.c > 1)
+			s.deadtime = strtod(arg.v[1], 0);
+		else
+			dprintf(fd, "%.1lf sec\n", s.deadtime);
+	} else if (!strcmp(arg.v[0], "cmd")) {
+		if (arg.c > 1) {
+			if (s.stopcmd)
+				free(s.stopcmd);
+			s.stopcmd = strdup(arg.v[1]);
+		} else
+			dprintf(fd, "command %s\n", s.stopcmd ?: s.default_stopcmd);
 	}
 	return ret;
 }
@@ -151,22 +180,26 @@ static void sighandler(int sig) {
 	case SIGCHLD:
 		// raop_play failed
 		waitpid(-1, &status, WNOHANG);
-		exit(1);
+		s.pid = 0;
+		if (s.verbose)
+			error(0, 0, "child exited");
 		break;
 	case SIGTERM:
 	case SIGINT:
 		++s.sig.term;
 		break;
+	case SIGPIPE:
 	case SIGHUP:
-		break;
 	case SIGUSR1:
-		break;
 	case SIGUSR2:
+		if (s.verbose)
+			error(0, 0, "signal %i, %s", sig, strsignal(sig));
 		break;
 	}
 }
 static const int sigs[] = {
-	SIGALRM, SIGCHLD, SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2, 0, };
+	SIGPIPE, SIGALRM, SIGCHLD, SIGTERM, SIGINT,
+	SIGHUP, SIGUSR1, SIGUSR2, 0, };
 //-----------------------------------------------------------------------------
 static struct argp argp;
 int main (int argc, char *argv[]) {
@@ -187,7 +220,7 @@ int main (int argc, char *argv[]) {
 		error(1, errno, "failed to create socket");
 
 	pollcore_signal_handler(sigs, sighandler, 0);
-	start_airport();
+	set_play();
 
 	while (!s.sig.term) {
 		ustl_runm(0.005);
