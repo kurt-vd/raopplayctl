@@ -40,7 +40,7 @@ static struct {
 	.agent = "raop_play",
 	.playing = PLAYING,
 	.deadtime = 60,
-	.default_stopcmd = "pause",
+	.default_stopcmd = "quit",
 };
 //-----------------------------------------------------------------------------
 static void start_airport(void) {
@@ -68,6 +68,8 @@ static int set_volume(double volume) {
 	else if (volume > 1)
 		volume = 1;
 	s.volume = volume;
+	if (s.verbose)
+		error(0, 0, "volume %.3lf", s.volume);
 	if (!s.pid)
 		return 0;
 	return dprintf(s.sk[0], "volume %.0lf\n", s.volume *100);
@@ -159,15 +161,28 @@ static int client_read(struct pollh *ph) {
 //-----------------------------------------------------------------------------
 static int connection(struct urllisten *url, int fd) {
 	struct pollh *ph;
+	const char *remote;
+	char *tmp = 0;
 
 	if (s.verbose >= 2)
 		error(0, 0, "[%i] via [%i] %s", fd, urllisten_fd(url), urllisten_url(url));
 
-	ph = pollh_new("client", urllisten_remote(url));
+	remote = urllisten_remote(url);
+	if (!remote) {
+		int pid, uid, gid;
+		socket_peer_cred(urllisten_fd(url), &uid, &gid, &pid);
+		asprintf(&tmp, "%s, u%i g%i p%i",
+			urllisten_vfs_path(url), uid, gid, pid);
+	}
+
+
+	ph = pollh_new("client", remote ?: tmp);
 	pollh_set_fd(ph, fd);
 	pollh_set_handler(ph, EV_RD, client_read);
 	pollh_mod_event(ph, EV_RD, 1);
 	pollh_add(ph);
+	if (tmp)
+		free(tmp);
 	return 0;
 }
 //-----------------------------------------------------------------------------
