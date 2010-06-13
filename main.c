@@ -63,16 +63,17 @@ static void start_airport(void) {
 }
 //-----------------------------------------------------------------------------
 static int set_volume(double volume) {
+	double tvol = (volume * 0.15) + 0.85;
 	if (volume < 0)
 		volume = 0;
 	else if (volume > 1)
 		volume = 1;
 	s.volume = volume;
 	if (s.verbose)
-		error(0, 0, "volume %.3lf", s.volume);
+		error(0, 0, "volume %.3lf (%.3lf)", s.volume, tvol);
 	if (!s.pid)
 		return 0;
-	return dprintf(s.sk[0], "volume %.0lf\n", s.volume *100);
+	return dprintf(s.sk[0], "volume %.0lf\n", tvol *100);
 }
 //-----------------------------------------------------------------------------
 static void timed_stop(void *vp) {
