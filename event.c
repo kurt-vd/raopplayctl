@@ -11,7 +11,7 @@
 #include <sys/time.h>
 
 #include <llist.h>
-#include "event.h"
+#include "ev.h"
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
@@ -35,7 +35,7 @@ static struct {
 	#define NEVS	16
 	struct epoll_event evs[NEVS];
 	struct {
-		int revents;
+		int revs;
 	} curr;
 } s = {
 	.epfd = -1,
@@ -48,8 +48,8 @@ struct fentry {
 	int fd;
 	void (*fn)(int fn, void *vp);
 	void *vp;
-	int events;
-	int revents;
+	int evs;
+	int revs;
 };
 #define list2fentry(x)	container_of(struct fentry, list, (x))
 struct tentry {
@@ -88,7 +88,7 @@ static struct tentry * find_timer(void (*fn)(void *), const void *vp) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-double event_now (void) {
+double ev_now (void) {
 #if defined(HAVE_CLOCK_GETTIME)
 	struct timespec t;
 	if (clock_gettime(CLOCK_MONOTONIC, &t) < 0)
@@ -115,9 +115,9 @@ static int epoll_add(struct fentry *ent) {
 		return 0;
 
 	ev.events = 0;
-	if (ent->events & EVENT_RD)
+	if (ent->evs & EVENT_RD)
 		ev.events |= EPOLLIN;
-	if (ent->events & EVENT_WR)
+	if (ent->evs & EVENT_WR)
 		ev.events |= EPOLLOUT;
 	ev.data.ptr = ent;
 	ret = epoll_ctl(s.epfd, EPOLL_CTL_ADD, ent->fd, &ev);
@@ -168,7 +168,7 @@ static int itimer_schedule(double delay) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-int event_init(void) {
+int ev_init(void) {
 	int ret;
 	struct llist *lst;
 
@@ -183,7 +183,7 @@ int event_init(void) {
 }
 //-----------------------------------------------------------------------------
 __attribute__((destructor))
-void event_shutdown(void) {
+void ev_shutdown(void) {
 	struct llist *lst;
 	struct fentry *ent;
 
@@ -202,14 +202,14 @@ void event_shutdown(void) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-int event_add_fd(int fd, void (*fn)(int fd, void *vp), const void *vp) {
+int ev_add_fd(int fd, void (*fn)(int fd, void *vp), const void *vp) {
 	struct fentry *ent;
 
 	ent = find_fd(fd);
 	if (!ent) {
 		ent = zmalloc(sizeof(*ent));
 		ent->fd = fd;
-		ent->events |= EVENT_RD;
+		ent->evs |= EVENT_RD;
 		llist_add(&s.fds, &ent->list);
 		epoll_add(ent);
 	}
@@ -218,7 +218,7 @@ int event_add_fd(int fd, void (*fn)(int fd, void *vp), const void *vp) {
 	return 0;
 }
 //-----------------------------------------------------------------------------
-void event_remove_fd(int fd) {
+void ev_remove_fd(int fd) {
 	struct fentry *ent;
 
 	ent = find_fd(fd);
@@ -231,7 +231,7 @@ void event_remove_fd(int fd) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-void event_add_timeout(double timeout, void (*fn)(void *), const void *vp) {
+void ev_add_timeout(double timeout, void (*fn)(void *), const void *vp) {
 	struct tentry *ent;
 
 	ent = find_timer(fn, vp);
@@ -240,23 +240,23 @@ void event_add_timeout(double timeout, void (*fn)(void *), const void *vp) {
 		ent->fn = fn;
 		ent->vp = (void *)vp;
 	}
-	ent->wakeup = event_now() + timeout;
+	ent->wakeup = ev_now() + timeout;
 	llist_add(&s.timers, &ent->list);
 }
 //-----------------------------------------------------------------------------
-void event_repeat_timeout(double increment, void (*fn)(void *), const void *vp) {
+void ev_repeat_timeout(double increment, void (*fn)(void *), const void *vp) {
 	struct tentry *ent;
 
 	ent = find_timer(fn, vp);
 	if (!ent)
-		event_add_timeout(increment, fn, vp);
+		ev_add_timeout(increment, fn, vp);
 	else {
 		ent->wakeup += increment;
 		llist_add(&s.timers, &ent->list);
 	}
 }
 //-----------------------------------------------------------------------------
-void event_remove_timeout(void (*fn)(void *), const void *vp) {
+void ev_remove_timeout(void (*fn)(void *), const void *vp) {
 	struct tentry *ent;
 
 	ent = find_timer(fn, vp);
@@ -275,7 +275,7 @@ static int cmp_timer(struct llist *la, struct llist *lb) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-static void run_timed_events(double now, double *pfirst) {
+static void run_timed_evs(double now, double *pfirst) {
 	struct llist *lst;
 	struct tentry *ent;
 	int cnt;
@@ -302,30 +302,30 @@ static void run_timed_events(double now, double *pfirst) {
 		free(list2tentry(lst));
 }
 //-----------------------------------------------------------------------------
-int event_current_events(void) {
+int ev_current_evs(void) {
 	int ret = 0;
-	if (s.curr.revents & (EPOLLIN | EPOLLRDHUP))
+	if (s.curr.revs & (EPOLLIN | EPOLLRDHUP))
 		ret |= EVENT_RD;
-	if (s.curr.revents & (EPOLLOUT | EPOLLHUP))
+	if (s.curr.revs & (EPOLLOUT | EPOLLHUP))
 		ret |= EVENT_WR;
-	if (s.curr.revents & EPOLLERR)
+	if (s.curr.revs & EPOLLERR)
 		ret |= EVENT_ERR;
 	return ret;
 }
 //-----------------------------------------------------------------------------
-int event_loop(double delay) {
+int ev_loop(double delay) {
 	int ret, j;
 	struct fentry *ent;
 	double now, next;
 
 	if (s.epfd < 0) {
-		ret = event_init();
+		ret = ev_init();
 		if (ret < 0)
 			return ret;
 	}
-	now = event_now();
+	now = ev_now();
 	next = now + delay;
-	run_timed_events(now, &next);
+	run_timed_evs(now, &next);
 	itimer_schedule(next);
 	ret = s.nevs = epoll_wait(s.epfd, s.evs, NEVS, -1);
 	if (ret < 0)
@@ -333,13 +333,13 @@ int event_loop(double delay) {
 	itimer_cancel();
 	for (j = 0; j < s.nevs; ++j) {
 		if (!s.evs[j].data.ptr)
-			// cleared by event_remove
+			// cleared by ev_remove
 			continue;
-		s.curr.revents = s.evs[j].events;
+		s.curr.revs = s.evs[j].events;
 		ent = s.evs[j].data.ptr;
 		ent->fn(ent->fd, ent->vp);
 	}
-	s.curr.revents = 0;
+	s.curr.revs = 0;
 	return ret;
 }
 //-----------------------------------------------------------------------------

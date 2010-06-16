@@ -19,7 +19,7 @@
 
 #include <libconf.h>
 #include <liburl.h>
-#include "event.h"
+#include "ev.h"
 // ----------------------------------------------------------------------------
 static struct {
 	int verbose;
@@ -101,7 +101,7 @@ static void set_stop(void) {
 	if (PLAYING != s.playing)
 		return;
 	s.playing = PENDING;
-	event_add_timeout(s.deadtime, timed_stop, 0);
+	ev_add_timeout(s.deadtime, timed_stop, 0);
 	if (s.verbose)
 		error(0, 0, "stop in %.1lf seconds", s.deadtime);
 }
@@ -119,7 +119,7 @@ static void set_play(void) {
 	case PLAYING:
 		break;
 	case PENDING:
-		event_remove_timeout(timed_stop, 0);
+		ev_remove_timeout(timed_stop, 0);
 		if (s.verbose)
 			error(0, 0, "removed pending stop");
 		s.playing = PLAYING;
@@ -146,7 +146,7 @@ static void client_read(int fd, void *vp) {
 	if (ret <= 0) {
 		if (!ret && (s.verbose >= 2))
 			error(0, 0, "[%i] EOF", fd);
-		event_remove_fd(fd);
+		ev_remove_fd(fd);
 		return;
 	}
 	if (line[ret-1] == '\n')
@@ -157,7 +157,7 @@ static void client_read(int fd, void *vp) {
 	if (!strcmp(cmd, "ping"))
 		dprintf(fd, "pong\n");
 	else if (!strcmp(cmd, "quit")) {
-		event_remove_fd(fd);
+		ev_remove_fd(fd);
 		close(fd);
 		if (s.verbose >= 2)
 			error(0, 0, "[%i] requested disconnect", fd);
@@ -196,7 +196,7 @@ static void connection(int fd, void *vp) {
 	const char *url = vp;
 
 	if (!strncmp("fifo:", url, 5)) {
-		event_add_fd(fd, client_read, url);
+		ev_add_fd(fd, client_read, url);
 		return;
 	}
 	ret = sk = accept(fd, 0, 0);
@@ -207,7 +207,7 @@ static void connection(int fd, void *vp) {
 	if (s.verbose >= 2)
 		error(0, 0, "[%i] via [%i] %s", sk, fd, url);
 
-	event_add_fd(sk, client_read, (void *)url);
+	ev_add_fd(sk, client_read, (void *)url);
 }
 //-----------------------------------------------------------------------------
 static void sighandler(int fd, void *vp) {
@@ -280,7 +280,7 @@ static int setup_signals(void) {
 	ret = fd = signalfd(-1, &sigset, SFD_CLOEXEC);
 	if (ret < 0)
 		error(1, errno, "signalfd()");
-	event_add_fd(fd, sighandler, 0);
+	ev_add_fd(fd, sighandler, 0);
 	return fd;
 }
 //-----------------------------------------------------------------------------
@@ -303,11 +303,11 @@ int main (int argc, char *argv[]) {
 	set_play();
 
 	while (!s.sig.term) {
-		ret = event_loop(1);
+		ret = ev_loop(1);
 		if (ret < 0) {
 			if ((EINTR == errno)||(514/*ptraced*/ == errno))
 				continue;
-			error(0, errno, "event_loop()");
+			error(0, errno, "ev_loop()");
 			break;
 		}
 	}
@@ -356,7 +356,7 @@ error_t parse_opts (int key, char * arg, struct argp_state * state) {
 		ret = url_listen(arg);
 		if (ret < 0)
 			error(1, 0, "url_listen(%s) failed", arg);
-		event_add_fd(ret, connection, arg);
+		ev_add_fd(ret, connection, arg);
 		break;
 	case 't':
 		s.deadtime = strtod(arg, 0);
