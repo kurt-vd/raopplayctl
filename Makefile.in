@@ -20,7 +20,8 @@ STRIPOPTS	= @STRIPOPTS@
 include $(SVNROOT)/make/include
 -include $(patsubst $(SVNROOT)/%.c, %.d, $(wildcard $(SVNROOT)/*.c))
 
-mpd2airtunes-dbg: main.o
+mpd2airtunes-dbg: main.o \
+	signalfd.o event.o
 
 clean:
 	rm -rf $(wildcard *.d) $(wildcard *.o) $(patsubst %,%-dbg,$(PROGS))

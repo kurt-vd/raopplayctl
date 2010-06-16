@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 #include <signal.h>
 
 #include <unistd.h>
@@ -9,11 +10,16 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#ifdef HAVE_SYS_SIGNALFD_H
+#include <sys/signalfd.h>
+#else
+#warning using own signalfd
+#include "signalfd.h"
+#endif
 
-#include <urllisten.h>
-#include <poll-core.h>
-#include <ustl.h>
 #include <libconf.h>
+#include <liburl.h>
+#include "event.h"
 // ----------------------------------------------------------------------------
 static struct {
 	int verbose;
@@ -26,22 +32,27 @@ static struct {
 
 	int pid;
 	int sk[2];
+	int epfd;
 	double volume;
 	struct {
 		int term;
 	} sig;
 	double deadtime;
 	int playing;
-#define PLAYING	1
-#define PENDING	2
-#define STOPPED	3
+#define PLAYING		1
+#define PENDING		2
+#define STOPPING	3
+#define STOPPED		4
+#define WAIT_PLAY	5 // resumed during stop
 }s = {
 	.volume = 1,
 	.agent = "raop_play",
-	.playing = PLAYING,
+	.playing = STOPPED,
 	.deadtime = 60,
 	.default_stopcmd = "quit",
 };
+//-----------------------------------------------------------------------------
+//
 //-----------------------------------------------------------------------------
 static void start_airport(void) {
 	int ret;
@@ -50,9 +61,6 @@ static void start_airport(void) {
 	if (ret < 0)
 		error(1, errno, "fork()");
 	if (!ret) {
-		pollcore_fds_freeze();
-		pollcore_shutdown();
-
 		dup2(s.sk[1], STDIN_FILENO);
 		close(s.sk[0]);
 		close(s.sk[1]);
@@ -60,6 +68,8 @@ static void start_airport(void) {
 		error(1, errno, "execlp(%s, ...)", s.agent);
 	}
 	s.pid = ret;
+	if (s.verbose)
+		error(0, 0, "started %s", s.agent);
 }
 //-----------------------------------------------------------------------------
 static int set_volume(double volume) {
@@ -79,16 +89,19 @@ static int set_volume(double volume) {
 static void timed_stop(void *vp) {
 	const char *cmd = s.stopcmd ?: s.default_stopcmd;
 	dprintf(s.sk[0], "%s\n", cmd);
-	s.playing = STOPPED;
+	s.playing = STOPPING;
+	kill(s.pid, SIGTERM);
 	if (s.verbose)
 		error(0, 0, "%s %s", cmd, s.airport);
 }
 //-----------------------------------------------------------------------------
 static void set_stop(void) {
+	if (!s.pid)
+		return;
 	if (PLAYING != s.playing)
 		return;
 	s.playing = PENDING;
-	ustl_add_timeout(s.deadtime, timed_stop, 0);
+	event_add_timeout(s.deadtime, timed_stop, 0);
 	if (s.verbose)
 		error(0, 0, "stop in %.1lf seconds", s.deadtime);
 }
@@ -98,107 +111,131 @@ static void set_play(void) {
 		start_airport();
 		s.playing = PLAYING;
 		set_volume(s.volume);
+		if (s.verbose)
+			error(0, 0, "started %s", s.airport);
 		return;
 	}
 	switch (s.playing) {
 	case PLAYING:
 		break;
 	case PENDING:
-	default:
-		ustl_remove_timeout(timed_stop, 0);
+		event_remove_timeout(timed_stop, 0);
 		if (s.verbose)
 			error(0, 0, "removed pending stop");
+		s.playing = PLAYING;
+		break;
+	case STOPPING:
+		s.playing = WAIT_PLAY;
 		break;
 	case STOPPED:
 		dprintf(s.sk[0], "play %s\n", s.fifo);
 		if (s.verbose)
-			error(0, 0, "started %s", s.airport);
+			error(0, 0, "play %s", s.airport);
 		break;
 	}
-	s.playing = PLAYING;
 }
 //-----------------------------------------------------------------------------
-static int client_read(struct pollh *ph) {
+//
+//-----------------------------------------------------------------------------
+static void client_read(int fd, void *vp) {
 	int ret;
-	int fd = pollh_fd(ph);
 	static char line[1024];
-	struct argv arg;
+	char *cmd, *tok;
 
 	ret = read(fd, line, sizeof(line)-1);
 	if (ret <= 0) {
-		pollh_del(ph);
-		return 0;
+		if (!ret && (s.verbose >= 2))
+			error(0, 0, "[%i] EOF", fd);
+		event_remove_fd(fd);
+		return;
 	}
 	if (line[ret-1] == '\n')
 		line[ret-1] = 0;
-	memset(&arg, 0, sizeof(arg));
-	argv_parse(&arg, line);
-	if (arg.c <= 0)
-		return 0;
-	if (!strcmp(arg.v[0], "volume")) {
-		if (arg.c > 1)
-			set_volume(strtod(arg.v[1], 0));
+	cmd = tok = strtok(line, " \t");
+	if (!cmd)
+		return;
+	if (!strcmp(cmd, "ping"))
+		dprintf(fd, "pong\n");
+	else if (!strcmp(cmd, "quit")) {
+		event_remove_fd(fd);
+		close(fd);
+		if (s.verbose >= 2)
+			error(0, 0, "[%i] requested disconnect", fd);
+	} else if (!strcmp(cmd, "exit"))
+		raise(SIGINT);
+	else if (!strcmp(cmd, "volume")) {
+		tok = strtok(0, " \t");
+		if (tok)
+			set_volume(strtod(tok, 0));
 		else
 			dprintf(fd, "%.3lf\n", s.volume);
-	} else if (!strcmp(arg.v[0], "stop")) {
+	} else if (!strcmp(cmd, "stop")) {
 		set_stop();
-	} else if (!strcmp(arg.v[0], "start")) {
+	} else if (!strcmp(cmd, "start")) {
 		set_play();
-	} else if (!strcmp(arg.v[0], "time")) {
-		if (arg.c > 1)
-			s.deadtime = strtod(arg.v[1], 0);
+	} else if (!strcmp(cmd, "time")) {
+		tok = strtok(0, " \t");
+		if (tok)
+			s.deadtime = strtod(tok, 0);
 		else
 			dprintf(fd, "%.1lf sec\n", s.deadtime);
-	} else if (!strcmp(arg.v[0], "cmd")) {
-		if (arg.c > 1) {
+	} else if (!strcmp(cmd, "cmd")) {
+		tok = strtok(0, " \t");
+		if (tok) {
 			if (s.stopcmd)
 				free(s.stopcmd);
-			s.stopcmd = strdup(arg.v[1]);
+			s.stopcmd = strdup(tok);
 		} else
 			dprintf(fd, "command %s\n", s.stopcmd ?: s.default_stopcmd);
 	}
-	return ret;
+	return;
 }
 //-----------------------------------------------------------------------------
-static int connection(struct urllisten *url, int fd) {
-	struct pollh *ph;
-	const char *remote;
-	char *tmp = 0;
+static void connection(int fd, void *vp) {
+	int ret, sk;
+	const char *url = vp;
 
-	if (s.verbose >= 2)
-		error(0, 0, "[%i] via [%i] %s", fd, urllisten_fd(url), urllisten_url(url));
-
-	remote = urllisten_remote(url);
-	if (!remote) {
-		int pid, uid, gid;
-		socket_peer_cred(urllisten_fd(url), &uid, &gid, &pid);
-		asprintf(&tmp, "%s, u%i g%i p%i",
-			urllisten_vfs_path(url), uid, gid, pid);
+	if (!strncmp("fifo:", url, 5)) {
+		event_add_fd(fd, client_read, url);
+		return;
 	}
+	ret = sk = accept(fd, 0, 0);
+	if (ret < 0) {
+		error(0, errno, "accept(%s)", url);
+		return;
+	}
+	if (s.verbose >= 2)
+		error(0, 0, "[%i] via [%i] %s", sk, fd, url);
 
-
-	ph = pollh_new("client", remote ?: tmp);
-	pollh_set_fd(ph, fd);
-	pollh_set_handler(ph, EV_RD, client_read);
-	pollh_mod_event(ph, EV_RD, 1);
-	pollh_add(ph);
-	if (tmp)
-		free(tmp);
-	return 0;
+	event_add_fd(sk, client_read, (void *)url);
 }
 //-----------------------------------------------------------------------------
-static void sighandler(int sig) {
-	int status;
+static void sighandler(int fd, void *vp) {
+	int ret, status;
+	struct signalfd_siginfo i;
 
-	switch (sig) {
+	ret = read(fd, &i, sizeof(i));
+	if (ret < 0) {
+		if (EINTR == errno)
+			return;
+		error(1, errno, "read(sigpipe)");
+	}
+	if (ret == 0)
+		error(1, 0, "sigpipe EOF");
+	switch (i.ssi_signo) {
 	case SIGALRM:
+		set_stop();
 		break;
 	case SIGCHLD:
 		// raop_play failed
 		waitpid(-1, &status, WNOHANG);
 		s.pid = 0;
 		if (s.verbose)
-			error(0, 0, "child exited");
+			error(0, 0, "%s exited", s.agent);
+		if (s.playing == WAIT_PLAY)
+			set_play();
+		else
+			s.playing = STOPPED;
 		break;
 	case SIGTERM:
 	case SIGINT:
@@ -209,22 +246,49 @@ static void sighandler(int sig) {
 	case SIGUSR1:
 	case SIGUSR2:
 		if (s.verbose)
-			error(0, 0, "signal %i, %s", sig, strsignal(sig));
+			error(0, 0, "signal %i, %s",
+					i.ssi_signo, strsignal(i.ssi_signo));
 		break;
 	}
 }
+//-----------------------------------------------------------------------------
 static const int sigs[] = {
 	SIGPIPE, SIGALRM, SIGCHLD, SIGTERM, SIGINT,
 	SIGHUP, SIGUSR1, SIGUSR2, 0, };
+//-----------------------------------------------------------------------------
+// saved sigmask, to restore before fork/exec
+static sigset_t saved_sigs;
+static int saved_sigs_valid;
+//-----------------------------------------------------------------------------
+__attribute__((destructor))
+static void restore_signals(void) {
+	if (saved_sigs_valid)
+		sigprocmask(SIG_SETMASK, &saved_sigs, 0);
+}
+//-----------------------------------------------------------------------------
+static int setup_signals(void) {
+	int fd, ret;
+	const int *lp;
+	sigset_t sigset;
+
+	sigemptyset(&sigset);
+	for (lp = sigs; *lp; ++lp)
+		sigaddset(&sigset, *lp);
+	sigprocmask(SIG_BLOCK, &sigset, &saved_sigs);
+	saved_sigs_valid = 1;
+
+	ret = fd = signalfd(-1, &sigset, SFD_CLOEXEC);
+	if (ret < 0)
+		error(1, errno, "signalfd()");
+	event_add_fd(fd, sighandler, 0);
+	return fd;
+}
 //-----------------------------------------------------------------------------
 static struct argp argp;
 int main (int argc, char *argv[]) {
 	int ret;
 
-	pollcore_init();
-	ustl_init();
-	pollcore_start();
-
+	program_invocation_name = program_invocation_short_name;
 	ret = argp_parse(&argp, argc, argv, ARGP_IN_ORDER, 0, &s);
 	if (ret)
 		return 1;
@@ -235,22 +299,19 @@ int main (int argc, char *argv[]) {
 	if (ret < 0)
 		error(1, errno, "failed to create socket");
 
-	pollcore_signal_handler(sigs, sighandler, 0);
+	setup_signals();
 	set_play();
 
 	while (!s.sig.term) {
-		ustl_runm(0.005);
-		ustl_set_itimer(1);
-		ret = pollcore_wait(-1);
+		ret = event_loop(1);
 		if (ret < 0) {
 			if ((EINTR == errno)||(514/*ptraced*/ == errno))
 				continue;
-			error(1, errno, "pollcore_wait()");
+			error(0, errno, "event_loop()");
+			break;
 		}
 	}
 
-	pollcore_shutdown();
-	ustl_shutdown();
 	if (s.pid)
 		kill(s.pid, SIGTERM);
 	if (s.verbose)
@@ -279,7 +340,7 @@ static struct argp_option opts [] = {
 //-----------------------------------------------------------------------------
 static
 error_t parse_opts (int key, char * arg, struct argp_state * state) {
-	struct urllisten *urll;
+	int ret;
 
 	switch (key) {
 	case 'q' :
@@ -292,10 +353,10 @@ error_t parse_opts (int key, char * arg, struct argp_state * state) {
 		break;
 
 	case 'l':
-		urll = urllisten(arg);
-		if (!urll)
-			error(1, errno, "bad url %s", arg);
-		urllisten_set_main(urll, connection);
+		ret = url_listen(arg);
+		if (ret < 0)
+			error(1, 0, "url_listen(%s) failed", arg);
+		event_add_fd(ret, connection, arg);
 		break;
 	case 't':
 		s.deadtime = strtod(arg, 0);
