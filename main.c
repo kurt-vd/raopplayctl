@@ -10,16 +10,11 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
-#ifdef HAVE_SYS_SIGNALFD_H
 #include <sys/signalfd.h>
-#else
-#warning using own signalfd
-#include "signalfd.h"
-#endif
 
 #include <libconf.h>
 #include <liburl.h>
-#include "ev.h"
+#include <libev.h>
 // ----------------------------------------------------------------------------
 static struct {
 	int verbose;

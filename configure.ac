@@ -30,14 +30,12 @@ fi
 AC_SUBST(STRIPOPTS)
 AC_MSG_NOTICE(strip options: '$STRIPOPTS')
 
-AC_CHECK_HEADERS([sys/signalfd.h])
-AC_REPLACE_FUNCS(signalfd)
-
 AC_SEARCH_LIBS(lround, m, , AC_MSG_ERROR(math library not found))
 AC_SEARCH_LIBS(clock_gettime, rt posix-time)
 AC_CHECK_FUNCS([clock_gettime gettimeofday])
 AC_SEARCH_LIBS(llist_init, llist, , AC_MSG_ERROR(libllist not found))
 AC_SEARCH_LIBS(url_listen, url, , AC_MSG_ERROR(liburl not found))
+AC_SEARCH_LIBS(ev_loop, ev, , AC_MSG_ERROR(libev not found))
 
 # replace CPPFLAGS to include config.h
 # do this only now, as config.h may not be present yet
