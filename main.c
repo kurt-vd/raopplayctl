@@ -182,6 +182,23 @@ static void client_read(int fd, void *vp) {
 			s.verbose = strtol(tok, 0, 0);
 		else
 			dprintf(fd, "verbose %i\n", s.verbose);
+	} else if (!strcmp(cmd, "info")) {
+		const char *msg = "unknown";
+		switch (s.playing) {
+		case PLAYING:
+			msg = "playing";
+			break;
+		case PENDING:
+			msg = "pending";
+			break;
+		case STOPPING:
+			msg = "stopping";
+			break;
+		case STOPPED:
+			msg = "stopped";
+			break;
+		}
+		dprintf(fd, "status: %s\n", msg);
 	} else if (!strcmp(cmd, "cmd")) {
 		tok = strtok(0, " \t");
 		if (tok) {
