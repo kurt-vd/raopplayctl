@@ -178,7 +178,7 @@ static void client_read(int fd, void *vp) {
 			dprintf(fd, "%.1lf sec\n", s.deadtime);
 	} else if (!strcmp(cmd, "verbose")) {
 		tok = strtok(0, " \t");
-		if (tok) {
+		if (tok)
 			s.verbose = strtol(tok, 0, 0);
 		else
 			dprintf(fd, "verbose %i\n", s.verbose);
