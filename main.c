@@ -146,6 +146,8 @@ static void client_read(int fd, void *vp) {
 	}
 	if (line[ret-1] == '\n')
 		line[ret-1] = 0;
+	if (s.verbose >= 2)
+		error(0, 0, "[%i] %s", fd, line);
 	cmd = tok = strtok(line, " \t");
 	if (!cmd)
 		return;
@@ -174,6 +176,12 @@ static void client_read(int fd, void *vp) {
 			s.deadtime = strtod(tok, 0);
 		else
 			dprintf(fd, "%.1lf sec\n", s.deadtime);
+	} else if (!strcmp(cmd, "verbose")) {
+		tok = strtok(0, " \t");
+		if (tok) {
+			s.verbose = strtol(tok, 0, 0);
+		else
+			dprintf(fd, "verbose %i\n", s.verbose);
 	} else if (!strcmp(cmd, "cmd")) {
 		tok = strtok(0, " \t");
 		if (tok) {
