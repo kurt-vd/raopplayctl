@@ -47,6 +47,33 @@ static struct {
 	.default_stopcmd = "quit",
 };
 //-----------------------------------------------------------------------------
+struct conn {
+	int id;
+	const char *url;
+	struct ln *ln;
+};
+//-----------------------------------------------------------------------------
+static struct conn *conn_new(int id) {
+	struct conn *conn;
+
+	conn = malloc(sizeof(*conn));
+	if (!conn)
+		error(1, errno, "malloc()");
+	memset(conn, 0, sizeof(*conn));
+	conn->ln = ln_new();
+	conn->id = id;
+	return conn;
+}
+//-----------------------------------------------------------------------------
+static inline int conn_id(struct conn *conn) {
+	return conn->id;
+}
+//-----------------------------------------------------------------------------
+static void conn_free(struct conn *conn) {
+	ln_free(conn->ln);
+	free(conn);
+}
+//-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
 static void start_airport(void) {
@@ -132,32 +159,19 @@ static void set_play(void) {
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-static void client_read(int fd, void *vp) {
-	int ret;
-	static char line[1024];
+static int client_line(struct conn *conn, char *line, int fd) {
 	char *cmd, *tok;
 
-	ret = read(fd, line, sizeof(line)-1);
-	if (ret <= 0) {
-		if (!ret && (s.verbose >= 2))
-			error(0, 0, "[%i] EOF", fd);
-		ev_remove_fd(fd);
-		return;
-	}
-	if (line[ret-1] == '\n')
-		line[ret-1] = 0;
-	if (s.verbose >= 2)
-		error(0, 0, "[%i] %s", fd, line);
 	cmd = tok = strtok(line, " \t");
-	if (!cmd)
-		return;
+	if (!tok)
+		return 0;
+
 	if (!strcmp(cmd, "ping"))
 		dprintf(fd, "pong\n");
 	else if (!strcmp(cmd, "quit")) {
-		ev_remove_fd(fd);
-		close(fd);
 		if (s.verbose >= 2)
 			error(0, 0, "[%i] requested disconnect", fd);
+		return -ECONNABORTED;
 	} else if (!strcmp(cmd, "exit"))
 		raise(SIGINT);
 	else if (!strcmp(cmd, "volume")) {
@@ -208,26 +222,64 @@ static void client_read(int fd, void *vp) {
 		} else
 			dprintf(fd, "command %s\n", s.stopcmd ?: s.default_stopcmd);
 	}
+	return 0;
+}
+//-----------------------------------------------------------------------------
+static void client_read(int fd, void *vp) {
+	int ret, fdret;
+	char *recv;
+	struct conn *conn = vp;
+	static char line[1024];
+
+	fdret = ret = read(fd, line, sizeof(line)-1);
+	if (ret <= 0) {
+		if (!ret && (s.verbose >= 2))
+			error(0, 0, "[%i] EOF", fd);
+		goto failed;
+	}
+	if (ret > 0) {
+		line[ret] = 0;
+		ln_add(conn->ln, line);
+	}
+
+	while (0 != (recv = ln_get(conn->ln, (fdret <= 0)))) {
+		if (s.verbose >= 2)
+			error(0, 0, "[%i] %s", conn_id(conn), line);
+		ret = client_line(conn, recv, fd);
+		if (ret < 0)
+			goto failed;
+	}
+	if (fdret > 0)
+		/* keep listening */
+		return;
+failed:
+	ev_remove_fd(fd);
+	conn_free(conn);
+	close(fd);
 	return;
 }
 //-----------------------------------------------------------------------------
 static void connection(int fd, void *vp) {
 	int ret, sk;
 	const char *url = vp;
+	struct conn *conn;
 
 	if (!strncmp("fifo:", url, 5)) {
-		ev_add_fd(fd, client_read, url);
-		return;
+		sk = fd;
+		goto ready;
 	}
 	ret = sk = accept(fd, 0, 0);
 	if (ret < 0) {
 		error(0, errno, "accept(%s)", url);
 		return;
 	}
+ready:
+	conn = conn_new(sk);
+	conn->url = url;
 	if (s.verbose >= 2)
-		error(0, 0, "[%i] via [%i] %s", sk, fd, url);
+		error(0, 0, "[%i] via [%i] %s", conn_id(conn), fd, url);
 
-	ev_add_fd(sk, client_read, (void *)url);
+	ev_add_fd(sk, client_read, conn);
 }
 //-----------------------------------------------------------------------------
 static void sighandler(int fd, void *vp) {
