@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/signalfd.h>
+#include <fcntl.h>
 
 #include <libconf.h>
 #include <liburl.h>
@@ -221,6 +222,8 @@ static int client_line(struct conn *conn, char *line, int fd) {
 			s.stopcmd = strdup(tok);
 		} else
 			dprintf(fd, "command %s\n", s.stopcmd ?: s.default_stopcmd);
+	} else {
+		dprintf(fd, "command '%s' unknown\n", cmd);
 	}
 	return 0;
 }
@@ -349,9 +352,10 @@ static int setup_signals(void) {
 	sigprocmask(SIG_BLOCK, &sigset, &saved_sigs);
 	saved_sigs_valid = 1;
 
-	ret = fd = signalfd(-1, &sigset, SFD_CLOEXEC);
+	ret = fd = signalfd(-1, &sigset, 0);
 	if (ret < 0)
 		error(1, errno, "signalfd()");
+	fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
 	ev_add_fd(fd, sighandler, 0);
 	return fd;
 }
