@@ -248,7 +248,7 @@ static void client_read(int fd, void *vp) {
 
 	while (0 != (recv = ln_get(conn->ln, (fdret <= 0)))) {
 		if (s.verbose >= 2)
-			error(0, 0, "[%i] %s", conn_id(conn), line);
+			error(0, 0, "[%i] %s", conn_id(conn), recv);
 		ret = client_line(conn, recv, fd);
 		if (ret < 0)
 			goto failed;
