@@ -175,7 +175,7 @@ static int client_line(struct conn *conn, char *line, int fd) {
 			error(0, 0, "[%i] requested disconnect", fd);
 		return -ECONNABORTED;
 	} else if (!strcmp(cmd, "exit"))
-		raise(SIGINT);
+		s.sig.term = 1;
 	else if (!strcmp(cmd, "volume")) {
 		tok = strtok(0, " \t");
 		if (tok)
@@ -379,7 +379,13 @@ int main (int argc, char *argv[]) {
 	setup_signals();
 	set_play();
 
-	while (!s.sig.term) {
+	while (!s.sig.term || s.pid) {
+		if (s.sig.term && (s.playing != STOPPING)) {
+			error(0, 0, "stop airport now");
+			if (s.playing == PENDING)
+				ev_remove_timeout(timed_stop, 0);
+			timed_stop(0);
+		}
 		ret = ev_loop(1);
 		if (ret < 0) {
 			if ((EINTR == errno)||(514/*ptraced*/ == errno))
@@ -389,8 +395,6 @@ int main (int argc, char *argv[]) {
 		}
 	}
 
-	if (s.pid)
-		kill(s.pid, SIGTERM);
 	if (s.verbose)
 		error(0, 0, "shutdown");
 	return 0;
