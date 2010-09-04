@@ -301,7 +301,6 @@ static void sighandler(int fd, void *vp) {
 		error(1, 0, "sigpipe EOF");
 	switch (i.ssi_signo) {
 	case SIGALRM:
-		set_stop();
 		break;
 	case SIGCHLD:
 		// raop_play failed
