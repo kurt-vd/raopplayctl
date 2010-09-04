@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <error.h>
 #include <argp.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -276,6 +277,7 @@ static void connection(int fd, void *vp) {
 		error(0, errno, "accept(%s)", url);
 		return;
 	}
+	fcntl(ret, F_SETFD, FD_CLOEXEC | fcntl(ret, F_GETFD));
 ready:
 	conn = conn_new(sk);
 	conn->url = url;
@@ -432,6 +434,7 @@ error_t parse_opts (int key, char * arg, struct argp_state * state) {
 		ret = url_listen(arg);
 		if (ret < 0)
 			error(1, 0, "url_listen(%s) failed", arg);
+		fcntl(ret, F_SETFD, FD_CLOEXEC | fcntl(ret, F_GETFD));
 		ev_add_fd(ret, connection, arg);
 		break;
 	case 't':
