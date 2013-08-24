@@ -1,0 +1,9 @@
+# build files
+*.o
+
+# build output
+mpd2airport
+
+# env files
+tags
+

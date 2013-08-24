@@ -1,0 +1,35 @@
+#!/bin/sh
+# Print additional version information for non-release trees.
+
+usage() {
+	echo "Usage: $0 [srctree]" >&2
+	exit 1
+}
+
+cd "${1:-.}" || usage
+
+# Check for git
+if [ -d .git ]; then
+	branch=`git rev-parse --abbrev-ref HEAD`
+	[ "$branch" = "master" ] || echo -n "($branch) "
+	git describe --tags --always --dirty
+	exit 0
+fi
+
+# Check for subversion
+if [ -d .svn ]; then
+	trail=`svn info | grep URL | head -n1 | \
+		sed -e "s,^.*/trunk.*$,trunk,g" -e "s,^.*/branches/,branches/,g" -e "s,^.*/tags/,tags/,g"`
+	rev=`svnversion -n . | sed -e 's,M,-MODIFIED,g' -e 's,S,-SWITCHED,g'`
+	case "$trail" in
+	tags/*|*/tags/*)
+		suffix=`echo -n "$rev" | sed -e 's,^[0-9:]*,,g'`
+		localversion="$trail$suffix"
+		;;
+	*)
+		localversion="$trail.r$rev"
+		;;
+	esac
+	echo "$localversion" | sed -e 's,[/\[\:],-,g'
+	exit 0
+fi
