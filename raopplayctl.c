@@ -18,7 +18,7 @@
 
 /* ARGUMENTS */
 static const char help_msg[] =
-	NAME ": Control airport device\n"
+	NAME ": Control raop_play agent (airport)\n"
 	"Usage:	" NAME " [OPTIONS] AIRPORT_URI\n"
 	"	" NAME " [OPTIONS] -c play FILE\n"
 	"	" NAME " [OPTIONS] -c stop\n"
@@ -27,7 +27,7 @@ static const char help_msg[] =
 	"Options:\n"
 	" -V, --version		Show version\n"
 	" -v, --verbose		Be more verbose\n"
-	" -u, --uri=URI		Change server URI (default @raop_play_ctl)\n"
+	" -u, --uri=URI		Change server URI (default @" NAME ")\n"
 	" -c, --client		Send command to SERVER\n"
 ;
 
@@ -74,7 +74,7 @@ static struct {
 	.agent = "raop_play",
 	.deadtime = 60,
 	.stopcmd = "quit",
-	.uri = "@raop_play_ctl",
+	.uri = "@" NAME,
 };
 
 /* logging */
