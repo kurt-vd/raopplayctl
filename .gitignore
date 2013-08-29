@@ -2,7 +2,7 @@
 *.o
 
 # build output
-mpd2airport
+raopplayctl
 
 # env files
 tags

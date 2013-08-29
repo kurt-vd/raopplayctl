@@ -1,4 +1,4 @@
-PROGS	= mpd2airport
+PROGS	= raopplayctl
 default	: $(PROGS)
 
 VERSION	:= $(shell ./getlocalversion .)
@@ -7,8 +7,6 @@ PREFIX	= /usr/local
 -include config.mk
 
 CPPFLAGS+= -DVERSION="\"$(VERSION)\""
-
-mpd2airtunes:
 
 clean:
 	rm -rf $(wildcard *.o) $(PROGS)
