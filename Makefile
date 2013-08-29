@@ -1,29 +1,17 @@
-PROGS	= mpd2airtunes
+PROGS	= mpd2airport
 default	: $(PROGS)
 
-PREFIX	= @prefix@
-VPATH	= @srcdir@
-SVNROOT	= @srcdir@
+VERSION	:= $(shell ./getlocalversion .)
+PREFIX	= /usr/local
 
-host	= @host@
-CC	= @CC@
-OBJCOPY	= @OBJCOPY@
-INSTALL	= @INSTALL@
+-include config.mk
 
-CFLAGS	= @CFLAGS@
-CPPFLAGS= @CPPFLAGS@
-LDFLAGS	= @LDFLAGS@
-LDLIBS	= @LIBS@
+CPPFLAGS+= -DVERSION="\"$(VERSION)\""
 
-STRIPOPTS	= @STRIPOPTS@
-
-include $(SVNROOT)/make/include
--include $(patsubst $(SVNROOT)/%.c, %.d, $(wildcard $(SVNROOT)/*.c))
-
-mpd2airtunes-dbg: main.o
+mpd2airtunes:
 
 clean:
-	rm -rf $(wildcard *.d) $(wildcard *.o) $(patsubst %,%-dbg,$(PROGS))
+	rm -rf $(wildcard *.o) $(PROGS)
 
 install: $(PROGS)
 	@[ -e $(DESTDIR)$(PREFIX)/bin ] || $(INSTALL) $(INSTOPTS) -d $(DESTDIR)$(PREFIX)/bin
