@@ -3,474 +3,357 @@
 #include <string.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <signal.h>
+#include <stdarg.h>
 
 #include <unistd.h>
-#include <error.h>
-#include <argp.h>
 #include <fcntl.h>
+#include <syslog.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
-#include <sys/signalfd.h>
-#include <fcntl.h>
+#include <sys/un.h>
 
-#include <libconf.h>
-#include <liburl.h>
-#include <libev.h>
-// ----------------------------------------------------------------------------
+#define NAME	"raopplayctl"
+
+/* ARGUMENTS */
+static const char help_msg[] =
+	NAME ": Control airport device\n"
+	"Usage:	" NAME " [OPTIONS] AIRPORT_URI\n"
+	"	" NAME " [OPTIONS] -c play FILE\n"
+	"	" NAME " [OPTIONS] -c stop\n"
+	"	" NAME " [OPTIONS] -c volume VOLUME\n"
+	"\n"
+	"Options:\n"
+	" -V, --version		Show version\n"
+	" -v, --verbose		Be more verbose\n"
+	" -u, --uri=URI		Change server URI (default @raop_play_ctl)\n"
+	" -c, --client		Send command to SERVER\n"
+;
+
+#ifdef _GNU_SOURCE
+static const struct option long_opts[] = {
+	{ "help", no_argument, NULL, '?', },
+	{ "version", no_argument, NULL, 'V', },
+	{ "verbose", no_argument, NULL, 'v', },
+	{ "uri", required_argument, NULL, 'u', },
+	{ "client", no_argument, NULL, 'c', },
+	{ },
+};
+
+#else
+#define getopt_long(argc, argv, optstring, longopts, longindex) \
+	getopt((argc), (argv), (optstring))
+#endif
+
+static const char optstring[] = "?Vvu:c";
+
+/* data */
 static struct {
 	int verbose;
+	int client;
 	const char *airport;
 	const char *agent;
-	const char *fifo;
+	const char *uri;
 
-	char *stopcmd;
-	const char *default_stopcmd;
+	const char *stopcmd;
 
-	int pid;
-	int sk[2];
-	int epfd;
+	int agentpid;
+	int agentfd;
 	double volume;
-	struct {
+
+	struct sig {
 		int term;
+		int alrm;
+		int chld;
 	} sig;
-	double deadtime;
-	int playing;
-#define PLAYING		1
-#define PENDING		2
-#define STOPPING	3
-#define STOPPED		4
-#define WAIT_PLAY	5 // resumed during stop
+
+	int deadtime;
 }s = {
 	.volume = 1,
 	.agent = "raop_play",
-	.playing = STOPPED,
 	.deadtime = 60,
-	.default_stopcmd = "quit",
+	.stopcmd = "quit",
+	.uri = "@raop_play_ctl",
 };
-//-----------------------------------------------------------------------------
-struct conn {
-	int id;
-	const char *url;
-	struct ln *ln;
-};
-//-----------------------------------------------------------------------------
-static struct conn *conn_new(int id) {
-	struct conn *conn;
 
-	conn = malloc(sizeof(*conn));
-	if (!conn)
-		error(1, errno, "malloc()");
-	memset(conn, 0, sizeof(*conn));
-	conn->ln = ln_new();
-	conn->id = id;
-	return conn;
+/* logging */
+	__attribute__((format(printf,3,4)))
+void elog(int prio, int errnum, const char *fmt, ...)
+{
+	char *str;
+	va_list va;
+
+	va_start(va, fmt);
+	vasprintf(&str, fmt, va);
+	va_end(va);
+	if (errnum) {
+		char *tmp = str;
+
+		asprintf(&str, "%s: %s", tmp, strerror(errnum));
+		free(tmp);
+	}
+	if (s.client) {
+		fprintf(stderr, NAME ": %s\n", str);
+		fflush(stderr);
+	}
+	syslog(prio, "%s\n", str);
+	free(str);
+	if (prio <= LOG_CRIT)
+		exit(1);
 }
-//-----------------------------------------------------------------------------
-static inline int conn_id(struct conn *conn) {
-	return conn->id;
+
+/* ctrl iface */
+static int open_sock(const char *uri)
+{
+	int namelen, saved_umask, ret, sk;
+	union {
+		struct sockaddr sa;
+		struct sockaddr_un un;
+	} name = {};
+
+	name.un.sun_family = AF_UNIX;
+	strncpy(name.un.sun_path, uri, sizeof(name.un.sun_path));
+	namelen = SUN_LEN(&name.un);
+	if (name.un.sun_path[0] == '@')
+		name.un.sun_path[0] = 0;
+
+	/* socket creation */
+	ret = sk = socket(name.sa.sa_family, SOCK_DGRAM/* | SOCK_CLOEXEC*/, 0);
+	if (ret < 0) {
+		elog(LOG_WARNING, errno, "socket %i dgram 0", name.sa.sa_family);
+		return ret;
+	}
+	fcntl(sk, F_SETFD, fcntl(sk, F_GETFD) | FD_CLOEXEC);
+
+	saved_umask = umask(0);
+	ret = bind(sk, &name.sa, namelen);
+	umask(saved_umask);
+	return sk;
 }
-//-----------------------------------------------------------------------------
-static void conn_free(struct conn *conn) {
-	ln_free(conn->ln);
-	free(conn);
+
+static int connect_sock(int sk, const char *uri)
+{
+	int namelen, ret;
+	union {
+		struct sockaddr sa;
+		struct sockaddr_un un;
+	} name = {};
+
+	name.un.sun_family = AF_UNIX;
+	strncpy(name.un.sun_path, uri, sizeof(name.un.sun_path));
+	namelen = SUN_LEN(&name.un);
+	if (name.un.sun_path[0] == '@')
+		name.un.sun_path[0] = 0;
+
+	ret = connect(sk, &name.sa, namelen);
+	if (ret < 0)
+		elog(LOG_CRIT, errno, "connect %s", uri);
+	return ret;
 }
-//-----------------------------------------------------------------------------
-//
-//-----------------------------------------------------------------------------
-static void start_airport(void) {
+
+/* child control */
+static void start_airport(void)
+{
 	int ret;
 
 	ret = fork();
 	if (ret < 0)
-		error(1, errno, "fork()");
+		elog(LOG_CRIT, errno, "fork()");
 	if (!ret) {
-		dup2(s.sk[1], STDIN_FILENO);
-		close(s.sk[0]);
-		close(s.sk[1]);
-		execlp(s.agent, "airport", "-i", s.airport, s.fifo, (char *)0);
-		error(1, errno, "execlp(%s, ...)", s.agent);
+		dup2(s.agentfd, STDIN_FILENO);
+		dup2(s.agentfd, STDOUT_FILENO);
+		close(s.agentfd);
+		execlp(s.agent, s.agent, "-i", s.airport, NULL);
+		elog(LOG_CRIT, errno, "execlp %s -i %s", s.agent, s.airport);
 	}
-	s.pid = ret;
-	if (s.verbose)
-		error(0, 0, "started %s", s.agent);
+	s.agentpid = ret;
+	elog(LOG_INFO, 0, "started %s", s.agent);
 }
-//-----------------------------------------------------------------------------
-static int set_volume(double volume) {
+
+static void set_volume(double volume)
+{
 	double tvol = (volume * 0.15) + 0.85;
+
 	if (volume < 0)
 		volume = 0;
 	else if (volume > 1)
 		volume = 1;
 	s.volume = volume;
-	if (s.verbose)
-		error(0, 0, "volume %.3lf (%.3lf)", s.volume, tvol);
-	if (!s.pid)
-		return 0;
-	return dprintf(s.sk[0], "volume %.0lf\n", tvol *100);
+	elog(LOG_INFO, 0, "volume %.3lf (%.3lf)", s.volume, tvol);
+	if (s.agentpid)
+		printf("volume %.0lf\n", tvol *100);
 }
-//-----------------------------------------------------------------------------
-static void timed_stop(void *vp) {
-	const char *cmd = s.stopcmd ?: s.default_stopcmd;
-	dprintf(s.sk[0], "%s\n", cmd);
-	s.playing = STOPPING;
-	kill(s.pid, SIGTERM);
-	if (s.verbose)
-		error(0, 0, "%s %s", cmd, s.airport);
+
+static void stop_playing(void)
+{
+	printf("%s\n", s.stopcmd);
+	elog(LOG_INFO, 0, "%s %s", s.stopcmd, s.airport);
+	kill(s.agentpid, SIGTERM);
+	elog(LOG_INFO, 0, "killed");
 }
-//-----------------------------------------------------------------------------
-static void set_stop(void) {
-	if (!s.pid)
+
+static void schedule_stop(void)
+{
+	if (!s.agentpid)
 		return;
-	if (PLAYING != s.playing)
-		return;
-	s.playing = PENDING;
-	ev_add_timeout(s.deadtime, timed_stop, 0);
-	if (s.verbose)
-		error(0, 0, "stop in %.1lf seconds", s.deadtime);
+	alarm(s.deadtime);
+	elog(LOG_INFO, 0, "stop in %i seconds", s.deadtime);
 }
-//-----------------------------------------------------------------------------
-static void set_play(void) {
-	if (!s.pid) {
+
+static void set_play(const char *path)
+{
+	/* cancel any scheduled stop */
+	alarm(0);
+
+	/* start agent if necessary */
+	if (!s.agentpid) {
 		start_airport();
-		s.playing = PLAYING;
 		set_volume(s.volume);
-		if (s.verbose)
-			error(0, 0, "started %s", s.airport);
-		return;
 	}
-	switch (s.playing) {
-	case PLAYING:
-		break;
-	case PENDING:
-		ev_remove_timeout(timed_stop, 0);
-		if (s.verbose)
-			error(0, 0, "removed pending stop");
-		s.playing = PLAYING;
-		break;
-	case STOPPING:
-		s.playing = WAIT_PLAY;
-		break;
-	case STOPPED:
-		dprintf(s.sk[0], "play %s\n", s.fifo);
-		if (s.verbose)
-			error(0, 0, "play %s", s.airport);
-		break;
-	}
+	/* do command */
+	printf("play %s\n", path);
+	elog(LOG_INFO, 0, "play %s", path);
 }
-//-----------------------------------------------------------------------------
-//
-//-----------------------------------------------------------------------------
-static int client_line(struct conn *conn, char *line, int fd) {
-	char *cmd, *tok;
 
-	cmd = tok = strtok(line, " \t");
-	if (!tok)
-		return 0;
-
-	if (!strcmp(cmd, "ping"))
-		dprintf(fd, "pong\n");
-	else if (!strcmp(cmd, "quit")) {
-		if (s.verbose >= 2)
-			error(0, 0, "[%i] requested disconnect", fd);
-		return -ECONNABORTED;
-	} else if (!strcmp(cmd, "exit"))
-		s.sig.term = 1;
-	else if (!strcmp(cmd, "volume")) {
-		tok = strtok(0, " \t");
-		if (tok)
-			set_volume(strtod(tok, 0));
-		else
-			dprintf(fd, "%.3lf\n", s.volume);
-	} else if (!strcmp(cmd, "stop")) {
-		set_stop();
-	} else if (!strcmp(cmd, "start")) {
-		set_play();
-	} else if (!strcmp(cmd, "time")) {
-		tok = strtok(0, " \t");
-		if (tok)
-			s.deadtime = strtod(tok, 0);
-		else
-			dprintf(fd, "%.1lf sec\n", s.deadtime);
-	} else if (!strcmp(cmd, "verbose")) {
-		tok = strtok(0, " \t");
-		if (tok)
-			s.verbose = strtol(tok, 0, 0);
-		else
-			dprintf(fd, "verbose %i\n", s.verbose);
-	} else if (!strcmp(cmd, "info")) {
-		const char *msg = "unknown";
-		switch (s.playing) {
-		case PLAYING:
-			msg = "playing";
-			break;
-		case PENDING:
-			msg = "pending";
-			break;
-		case STOPPING:
-			msg = "stopping";
-			break;
-		case STOPPED:
-			msg = "stopped";
-			break;
-		}
-		dprintf(fd, "status: %s\n", msg);
-	} else if (!strcmp(cmd, "cmd")) {
-		tok = strtok(0, " \t");
-		if (tok) {
-			if (s.stopcmd)
-				free(s.stopcmd);
-			s.stopcmd = strdup(tok);
-		} else
-			dprintf(fd, "command %s\n", s.stopcmd ?: s.default_stopcmd);
-	} else {
-		dprintf(fd, "command '%s' unknown\n", cmd);
-	}
-	return 0;
-}
-//-----------------------------------------------------------------------------
-static void client_read(int fd, void *vp) {
-	int ret, fdret;
-	char *recv;
-	struct conn *conn = vp;
-	static char line[1024];
-
-	fdret = ret = read(fd, line, sizeof(line)-1);
-	if (ret <= 0) {
-		if (!ret && (s.verbose >= 2))
-			error(0, 0, "[%i] EOF", fd);
-		goto failed;
-	}
-	if (ret > 0) {
-		line[ret] = 0;
-		ln_add(conn->ln, line);
-	}
-
-	while (0 != (recv = ln_get(conn->ln, (fdret <= 0)))) {
-		if (s.verbose >= 2)
-			error(0, 0, "[%i] %s", conn_id(conn), recv);
-		ret = client_line(conn, recv, fd);
-		if (ret < 0)
-			goto failed;
-	}
-	if (fdret > 0)
-		/* keep listening */
-		return;
-failed:
-	ev_remove_fd(fd);
-	conn_free(conn);
-	close(fd);
-	return;
-}
-//-----------------------------------------------------------------------------
-static void connection(int fd, void *vp) {
-	int ret, sk;
-	const char *url = vp;
-	struct conn *conn;
-
-	if (!strncmp("fifo:", url, 5)) {
-		sk = fd;
-		goto ready;
-	}
-	ret = sk = accept(fd, 0, 0);
-	if (ret < 0) {
-		error(0, errno, "accept(%s)", url);
-		return;
-	}
-	fcntl(ret, F_SETFD, FD_CLOEXEC | fcntl(ret, F_GETFD));
-ready:
-	conn = conn_new(sk);
-	conn->url = url;
-	if (s.verbose >= 2)
-		error(0, 0, "[%i] via [%i] %s", conn_id(conn), fd, url);
-
-	ev_add_fd(sk, client_read, conn);
-}
-//-----------------------------------------------------------------------------
-static void sighandler(int fd, void *vp) {
-	int ret, status;
-	struct signalfd_siginfo i;
-
-	ret = read(fd, &i, sizeof(i));
-	if (ret < 0) {
-		if (EINTR == errno)
-			return;
-		error(1, errno, "read(sigpipe)");
-	}
-	if (ret == 0)
-		error(1, 0, "sigpipe EOF");
-	switch (i.ssi_signo) {
+/* signal handlers */
+static void sighandler(int sig)
+{
+	switch (sig) {
 	case SIGALRM:
+		s.sig.alrm = 1;
 		break;
 	case SIGCHLD:
-		// raop_play failed
-		waitpid(-1, &status, WNOHANG);
-		s.pid = 0;
-		if (s.verbose)
-			error(0, 0, "%s exited", s.agent);
-		if (s.playing == WAIT_PLAY)
-			set_play();
-		else
-			s.playing = STOPPED;
+		s.sig.chld = 1;
 		break;
 	case SIGTERM:
 	case SIGINT:
-		++s.sig.term;
-		break;
-	case SIGPIPE:
-	case SIGHUP:
-	case SIGUSR1:
-	case SIGUSR2:
-		if (s.verbose)
-			error(0, 0, "signal %i, %s",
-					i.ssi_signo, strsignal(i.ssi_signo));
+		s.sig.term = 1;
 		break;
 	}
 }
-//-----------------------------------------------------------------------------
-static const int sigs[] = {
-	SIGPIPE, SIGALRM, SIGCHLD, SIGTERM, SIGINT,
-	SIGHUP, SIGUSR1, SIGUSR2, 0, };
-//-----------------------------------------------------------------------------
-// saved sigmask, to restore before fork/exec
-static sigset_t saved_sigs;
-static int saved_sigs_valid;
-//-----------------------------------------------------------------------------
-__attribute__((destructor))
-static void restore_signals(void) {
-	if (saved_sigs_valid)
-		sigprocmask(SIG_SETMASK, &saved_sigs, 0);
-}
-//-----------------------------------------------------------------------------
-static int setup_signals(void) {
-	int fd, ret;
-	const int *lp;
-	sigset_t sigset;
 
-	sigemptyset(&sigset);
-	for (lp = sigs; *lp; ++lp)
-		sigaddset(&sigset, *lp);
-	sigprocmask(SIG_BLOCK, &sigset, &saved_sigs);
-	saved_sigs_valid = 1;
+/* signal installer helper */
+static void setup_signals(void (*handler)(int sig), const int *table)
+{
+	/* setup signals */
+	struct sigaction sa = { .sa_handler = handler, };
+	int j;
 
-	ret = fd = signalfd(-1, &sigset, 0);
-	if (ret < 0)
-		error(1, errno, "signalfd()");
-	fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
-	ev_add_fd(fd, sighandler, 0);
-	return fd;
-}
-//-----------------------------------------------------------------------------
-static struct argp argp;
-int main (int argc, char *argv[]) {
-	int ret;
-
-	program_invocation_name = program_invocation_short_name;
-	ret = argp_parse(&argp, argc, argv, ARGP_IN_ORDER, 0, &s);
-	if (ret)
-		return 1;
-	if (!s.airport)
-		error(1, 0, "no airport IP");
-
-	ret = socketpair(PF_UNIX, SOCK_STREAM, 0, s.sk);
-	if (ret < 0)
-		error(1, errno, "failed to create socket");
-
-	setup_signals();
-	set_play();
-
-	while (!s.sig.term || s.pid) {
-		if (s.sig.term && (s.playing != STOPPING)) {
-			error(0, 0, "stop airport now");
-			if (s.playing == PENDING)
-				ev_remove_timeout(timed_stop, 0);
-			timed_stop(0);
-		}
-		ret = ev_loop(1);
-		if (ret < 0) {
-			if ((EINTR == errno)||(514/*ptraced*/ == errno))
-				continue;
-			error(0, errno, "ev_loop()");
-			break;
-		}
+	sigfillset(&sa.sa_mask);
+	for (j = 0; table[j]; ++j) {
+		if (sigaction(table[j], &sa, NULL) < 0)
+			elog(LOG_CRIT, errno, "sigaction %i", table[j]);
 	}
-
-	if (s.verbose)
-		error(0, 0, "shutdown");
-	return 0;
 }
-//-----------------------------------------------------------------------------
-//
-//-----------------------------------------------------------------------------
-static struct argp_option opts [] = {
-	{ "verbose"	,  'v', 0, OPTION_NO_USAGE, "more verbose", -1, },
-	{ "quiet"	,  'q', 0, OPTION_NO_USAGE, "less verbose", },
-	{ "silent"	,  's', 0, OPTION_NO_USAGE | OPTION_ALIAS, },
 
-	{ 0, 0, 0, 0, "Host options", },
-	{ "url"		,  'l', "URL", 0, "url to listen to", },
-	{ "time"	,  't', "SEC", 0, "time to wait before playback is stopped", },
-
-	{ 0, 0, 0, 0, "Remote options", },
-	{ "remote"	,  'r', "IP", 0, "airport ip address", },
-	{ "agent"	,  'a', "FILE", 0, "path to raop_play agent", },
-	{ "fifo"	,  'f', "FIFO", 0, "play FIFO", },
-
-	{ 0, },
-};
-//-----------------------------------------------------------------------------
-static
-error_t parse_opts (int key, char * arg, struct argp_state * state) {
-	int ret;
-
-	switch (key) {
-	case 'q' :
-	case 's' :
-		if (s.verbose)
-			--s.verbose;
-		break;
+int main(int argc, char *argv[])
+{
+	int ret, status, opt, sock, sk[2], j;
+	char *tok, *argument;
+	static char buf[1024];
+  
+	/* argument parsing */
+	while ((opt = getopt_long(argc, argv, optstring, long_opts, NULL)) != -1)
+	switch (opt) {
+	case 'V':
+		fprintf(stderr, "%s %s\n", NAME, VERSION);
+		return 0;
 	case 'v':
 		++s.verbose;
 		break;
-
-	case 'l':
-		ret = url_listen(arg);
-		if (ret < 0)
-			error(1, 0, "url_listen(%s) failed", arg);
-		fcntl(ret, F_SETFD, FD_CLOEXEC | fcntl(ret, F_GETFD));
-		ev_add_fd(ret, connection, arg);
+	case 'u':
+		s.uri = optarg;
 		break;
-	case 't':
-		s.deadtime = strtod(arg, 0);
-		if (s.deadtime < 0)
-			s.deadtime = 0;
+	case 'c':
+		s.client = 1;
 		break;
 
-	case 'a':
-		s.agent = arg;
-		break;
-	case 'r':
-		s.airport = arg;
-		break;
-	case 'f':
-		s.fifo = arg;
-		break;
-	case ARGP_KEY_ARG:
-		if (!s.airport)
-			s.airport = arg;
-		else if (!s.fifo)
-			s.fifo = arg;
-		break;
 	default:
-		return ARGP_ERR_UNKNOWN;
+		fputs(help_msg, stderr);
+		exit(1);
+		break;
 	}
+
+	if (s.client) {
+		/* client mode */
+		sprintf(buf, "@raop_play_client-%i", getpid());
+		sock = open_sock(buf);
+		connect_sock(sock, s.uri);
+		ret = 0;
+		for (j = optind; j < argc; ++j) {
+			ret += sprintf(buf+ret, "%s%s", ret ? " " : "", argv[j]);
+		}
+		if (send(sock, buf, ret, 0) < 0)
+			elog(LOG_CRIT, errno, "send %s", buf);
+		return 0;
+	}
+
+	/* start syslog */
+	openlog(NAME, LOG_PERROR | LOG_PID, LOG_DAEMON);
+
+	/* server mode */
+	s.airport = argv[optind++];
+
+	if (!s.airport)
+		elog(LOG_CRIT, 0, "no airport IP");
+
+	ret = sock = open_sock(s.uri);
+	if (ret < 0)
+		elog(LOG_CRIT, errno, "open socket");
+
+	ret = socketpair(PF_UNIX, SOCK_STREAM, 0, sk);
+	if (ret < 0)
+		elog(LOG_CRIT, errno, "failed to create socketpair");
+	dup2(sk[0], STDIN_FILENO);
+	dup2(sk[0], STDOUT_FILENO);
+	close(sk[0]);
+	s.agentfd = sk[1];
+
+	setup_signals(sighandler, (const int []){ SIGINT, SIGTERM, SIGCHLD, SIGALRM, 0});
+
+	while (!s.sig.term || s.agentpid) {
+		if (s.sig.alrm) {
+			s.sig.alrm = 0;
+			stop_playing();
+		}
+		if (s.sig.chld) {
+			s.sig.chld = 0;
+			/* agent exited */
+			waitpid(-1, &status, WNOHANG);
+			s.agentpid = 0;
+			elog(LOG_INFO, 0, "%s exited", s.agent);
+		}
+		if (s.sig.term && s.agentpid) {
+			elog(LOG_INFO, 0, "stop airport now");
+			/* cancel any pending alarm */
+			alarm(0);
+			/* actually stop */
+			stop_playing();
+		}
+		/* receive commands from ctl socket */
+		ret = recv(sock, buf, sizeof(buf)-1, 0);
+		if (ret < 0) {
+			if (EINTR == errno)
+				continue;
+			elog(LOG_CRIT, errno, "recv %s", s.uri);
+		}
+		tok = strtok(buf, " \t\r\n\v\f");
+		argument = strtok(NULL, "\t\r\n\v\f"); /* allow spaces in argument */
+		if (!strcmp(tok, "play"))
+			set_play(argument);
+		else if (!strcmp(tok, "stop"))
+			schedule_stop();
+		else if (!strcmp(tok, "volume"))
+			set_volume(strtod(argument, 0));
+		else if (!strcmp(tok, "exit"))
+			s.sig.term = 1;
+		else
+			/* pass-through */
+			printf("%s %s\n", tok, argument ?: "");
+		fflush(stdout);
+	}
+
+	elog(LOG_INFO, 0, "shutdown");
 	return 0;
 }
-//-----------------------------------------------------------------------------
-static struct argp argp = {
-	.options = opts,
-	.parser = parse_opts,
-	.doc = "airport player controller",
-};
-// ----------------------------------------------------------------------------
-
