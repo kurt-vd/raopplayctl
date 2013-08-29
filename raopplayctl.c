@@ -338,6 +338,7 @@ int main(int argc, char *argv[])
 				continue;
 			elog(LOG_CRIT, errno, "recv %s", s.uri);
 		}
+		buf[ret] = 0;
 		tok = strtok(buf, " \t\r\n\v\f");
 		argument = strtok(NULL, "\t\r\n\v\f"); /* allow spaces in argument */
 		if (!strcmp(tok, "play"))
