@@ -286,6 +286,11 @@ int main(int argc, char *argv[])
 		break;
 	}
 
+	if (optind >= argc) {
+		fputs(help_msg, stderr);
+		exit(1);
+	}
+
 	if (s.client) {
 		/* client mode */
 		sprintf(buf, "@raop_play_client-%i", getpid());
