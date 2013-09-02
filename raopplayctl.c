@@ -161,8 +161,15 @@ static void start_airport(void)
 	if (ret < 0)
 		elog(LOG_CRIT, errno, "fork()");
 	if (!ret) {
+		/* redirect stdout to /dev/null */
+		int nullfd = open("/dev/null", O_RDWR);
+		if (nullfd < 0)
+			elog(LOG_CRIT, errno, "open /dev/null");
+		dup2(nullfd, STDOUT_FILENO);
+		close(nullfd);
+
 		dup2(s.agentfd, STDIN_FILENO);
-		dup2(s.agentfd, STDOUT_FILENO);
+		/*dup2(s.agentfd, STDOUT_FILENO);*/
 		close(s.agentfd);
 		execlp(s.agent, s.agent, "-i", s.airport, NULL);
 		elog(LOG_CRIT, errno, "execlp %s -i %s", s.agent, s.airport);
