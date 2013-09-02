@@ -212,8 +212,8 @@ static void set_play(const char *path)
 		set_volume(s.volume);
 	}
 	/* do command */
-	printf("play %s\n", path);
-	elog(LOG_INFO, 0, "play %s", path);
+	printf("play %s\n", path ?: "");
+	elog(LOG_INFO, 0, "play %s", path ?: "");
 }
 
 /* signal handlers */
@@ -346,7 +346,7 @@ int main(int argc, char *argv[])
 		else if (!strcmp(tok, "stop"))
 			schedule_stop();
 		else if (!strcmp(tok, "volume"))
-			set_volume(strtod(argument, 0));
+			set_volume(strtod(argument ?: "0", 0));
 		else if (!strcmp(tok, "exit"))
 			s.sig.term = 1;
 		else

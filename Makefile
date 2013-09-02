@@ -3,6 +3,7 @@ default	: $(PROGS)
 
 VERSION	:= $(shell ./getlocalversion .)
 PREFIX	= /usr/local
+INSTALL	= install
 
 -include config.mk
 
