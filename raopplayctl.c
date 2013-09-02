@@ -19,10 +19,10 @@
 /* ARGUMENTS */
 static const char help_msg[] =
 	NAME ": Control raop_play agent (airport)\n"
-	"Usage:	" NAME " [OPTIONS] AIRPORT_URI\n"
-	"	" NAME " [OPTIONS] -c play FILE\n"
-	"	" NAME " [OPTIONS] -c stop\n"
-	"	" NAME " [OPTIONS] -c volume VOLUME\n"
+	"Usage:	" NAME " [OPTIONS] -s AIRPORT_URI\n"
+	"	" NAME " [OPTIONS] play FILE\n"
+	"	" NAME " [OPTIONS] stop\n"
+	"	" NAME " [OPTIONS] volume VOLUME\n"
 	"\n"
 	"Options:\n"
 	" -V, --version		Show version\n"
@@ -37,7 +37,7 @@ static const struct option long_opts[] = {
 	{ "version", no_argument, NULL, 'V', },
 	{ "verbose", no_argument, NULL, 'v', },
 	{ "uri", required_argument, NULL, 'u', },
-	{ "client", no_argument, NULL, 'c', },
+	{ "server", no_argument, NULL, 's', },
 	{ },
 };
 
@@ -46,7 +46,7 @@ static const struct option long_opts[] = {
 	getopt((argc), (argv), (optstring))
 #endif
 
-static const char optstring[] = "?Vvu:c";
+static const char optstring[] = "?Vvu:s";
 
 /* data */
 static struct {
@@ -70,6 +70,7 @@ static struct {
 
 	int deadtime;
 }s = {
+	.client = 1,
 	.volume = 1,
 	.agent = "raop_play",
 	.deadtime = 60,
@@ -272,8 +273,8 @@ int main(int argc, char *argv[])
 	case 'u':
 		s.uri = optarg;
 		break;
-	case 'c':
-		s.client = 1;
+	case 's':
+		s.client = 0;
 		break;
 
 	default:
