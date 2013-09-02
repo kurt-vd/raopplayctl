@@ -31,7 +31,7 @@ static const char help_msg[] =
 	" -V, --version		Show version\n"
 	" -v, --verbose		Be more verbose\n"
 	" -u, --uri=URI		Change server URI (default @" NAME ")\n"
-	" -c, --client		Send command to SERVER\n"
+	" -s, --server		start server\n"
 ;
 
 #ifdef _GNU_SOURCE
