@@ -343,6 +343,8 @@ int main(int argc, char *argv[])
 			waitpid(-1, &status, WNOHANG);
 			s.agentpid = 0;
 			elog(LOG_INFO, 0, "%s exited", s.agent);
+			/* test while() condition again */
+			continue;
 		}
 		if (s.sig.term && s.agentpid) {
 			elog(LOG_INFO, 0, "stop airport now");
@@ -350,6 +352,8 @@ int main(int argc, char *argv[])
 			alarm(0);
 			/* actually stop */
 			stop_playing();
+			/* test while() condition again */
+			continue;
 		}
 		/* receive commands from ctl socket */
 		ret = recv(sock, buf, sizeof(buf)-1, 0);
