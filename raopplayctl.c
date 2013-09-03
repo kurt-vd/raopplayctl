@@ -7,9 +7,11 @@
 #include <stdarg.h>
 
 #include <unistd.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <syslog.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
