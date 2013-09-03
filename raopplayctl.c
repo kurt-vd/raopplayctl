@@ -78,7 +78,7 @@ static struct {
 	.client = 1,
 	.volume = 1,
 	.agent = "raop_play",
-	.deadtime = 60,
+	.deadtime = 5,
 	.stopcmd = "quit",
 	.uri = "@" NAME,
 };
@@ -372,7 +372,7 @@ int main(int argc, char *argv[])
 		else if (!strcmp(tok, "volume"))
 			set_volume(strtod(argument ?: "0", 0));
 		else if (!strcmp(tok, "offdelay"))
-			s.deadtime = strtoul(argument ?: "60", NULL, 0);
+			s.deadtime = strtoul(argument ?: "5", NULL, 0);
 		else if (!strcmp(tok, "exit"))
 			s.sig.term = 1;
 		else
