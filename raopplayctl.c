@@ -331,6 +331,7 @@ int main(int argc, char *argv[])
 
 	setup_signals(sighandler, (const int []){ SIGINT, SIGTERM, SIGCHLD, SIGALRM, 0});
 
+	elog(LOG_INFO, 0, "daemon started for %s", s.uri);
 	while (!s.sig.term || s.agentpid) {
 		if (s.sig.alrm) {
 			s.sig.alrm = 0;
