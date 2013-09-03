@@ -186,16 +186,17 @@ static void start_airport(void)
 
 static void set_volume(double volume)
 {
-	double tvol = (volume * 0.15) + 0.85;
-
 	if (volume < 0)
 		volume = 0;
 	else if (volume > 1)
 		volume = 1;
 	s.volume = volume;
-	elog(LOG_INFO, 0, "volume %.3lf (%.3lf)", s.volume, tvol);
+	/* warp */
+	volume = (volume * 0.15) + 0.85;
+	/* output */
+	elog(LOG_INFO, 0, "volume %.3lf (%.3lf)", s.volume, volume);
 	if (s.agentpid)
-		printf("volume %.0lf\n", tvol *100);
+		printf("volume %.0lf\n", volume *100);
 }
 
 static void stop_playing(void)
