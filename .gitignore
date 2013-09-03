@@ -6,4 +6,5 @@ raopplayctl
 
 # env files
 tags
+config.mk
 
