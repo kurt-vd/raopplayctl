@@ -371,6 +371,8 @@ int main(int argc, char *argv[])
 			schedule_stop();
 		else if (!strcmp(tok, "volume"))
 			set_volume(strtod(argument ?: "0", 0));
+		else if (!strcmp(tok, "offdelay"))
+			s.deadtime = strtoul(argument ?: "60", NULL, 0);
 		else if (!strcmp(tok, "exit"))
 			s.sig.term = 1;
 		else
