@@ -84,7 +84,7 @@ static struct {
 };
 
 /* logging */
-	__attribute__((format(printf,3,4)))
+__attribute__((format(printf,3,4)))
 void elog(int prio, int errnum, const char *fmt, ...)
 {
 	char *str;
