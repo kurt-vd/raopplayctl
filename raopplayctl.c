@@ -85,6 +85,12 @@ static struct {
 
 	const char *stopcmd;
 
+	int stopstate;
+		#define STOP_NONE	0
+		#define STOP_COMMAND	1
+		#define STOP_SIGTERM	2
+		#define STOP_SIGKILL	3
+		#define STOP_UNKNOWN	4
 	int agentpid;
 	int agentfd;
 	double volume;
@@ -204,6 +210,7 @@ static void start_airport(void)
 	}
 	s.agentpid = ret;
 	elog(LOG_INFO, 0, "started %s", s.agent);
+	s.stopstate = STOP_NONE;
 }
 
 static void set_volume(double volume)
@@ -223,10 +230,35 @@ static void set_volume(double volume)
 
 static void stop_playing(void)
 {
-	printf("%s\n", s.stopcmd);
-	elog(LOG_INFO, 0, "%s %s", s.stopcmd, s.airport);
-	kill(s.agentpid, SIGTERM);
-	elog(LOG_INFO, 0, "killed");
+	switch (s.stopstate) {
+	case STOP_NONE:
+		printf("%s\n", s.stopcmd);
+		elog(LOG_INFO, 0, "%s %s", s.stopcmd, s.airport);
+		s.stopstate = STOP_COMMAND;
+		alarm(1);
+		break;
+	case STOP_COMMAND:
+		kill(s.agentpid, SIGTERM);
+		elog(LOG_INFO, 0, "killed SIGTERM");
+		s.stopstate = STOP_SIGTERM;
+		alarm(1);
+		break;
+	case STOP_SIGTERM:
+		kill(s.agentpid, SIGKILL);
+		elog(LOG_INFO, 0, "killed SIGKILL");
+		s.stopstate = STOP_SIGKILL;
+		alarm(1);
+		break;
+	case STOP_SIGKILL:
+		/* doesn't work, ignore further attempts */
+		s.stopstate = STOP_UNKNOWN;
+		s.agentpid = 0;
+		break;
+	default:
+		/* ?? */
+		break;
+
+	}
 }
 
 static void schedule_stop(void)
@@ -358,6 +390,7 @@ int main(int argc, char *argv[])
 		if (s.sig.alrm) {
 			s.sig.alrm = 0;
 			stop_playing();
+			continue;
 		}
 		if (s.sig.chld) {
 			s.sig.chld = 0;
@@ -368,7 +401,7 @@ int main(int argc, char *argv[])
 			/* test while() condition again */
 			continue;
 		}
-		if (s.sig.term && s.agentpid) {
+		if (s.sig.term && s.agentpid && !s.stopstate) {
 			elog(LOG_INFO, 0, "stop airport now");
 			/* cancel any pending alarm */
 			alarm(0);
