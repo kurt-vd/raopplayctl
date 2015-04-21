@@ -399,6 +399,9 @@ int main(int argc, char *argv[])
 			/* agent exited */
 			waitpid(-1, &status, WNOHANG);
 			s.agentpid = 0;
+			/* disable pending alarm */
+			alarm(0);
+			s.sig.alrm = 0;
 			elog(LOG_INFO, 0, "%s exited", s.agent);
 			/* test while() condition again */
 			continue;
@@ -407,6 +410,7 @@ int main(int argc, char *argv[])
 			elog(LOG_INFO, 0, "stop airport now");
 			/* cancel any pending alarm */
 			alarm(0);
+			s.sig.alrm = 0;
 			/* actually stop */
 			stop_playing();
 			/* test while() condition again */
