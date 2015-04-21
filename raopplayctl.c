@@ -232,20 +232,22 @@ static void stop_playing(void)
 {
 	switch (s.stopstate) {
 	case STOP_NONE:
+#if 0
 		printf("%s\n", s.stopcmd);
 		elog(LOG_INFO, 0, "%s %s", s.stopcmd, s.airport);
 		s.stopstate = STOP_COMMAND;
 		alarm(1);
 		break;
 	case STOP_COMMAND:
+#endif
+		elog(LOG_INFO, 0, "kill SIGTERM %i", s.agentpid);
 		kill(s.agentpid, SIGTERM);
-		elog(LOG_INFO, 0, "killed SIGTERM");
 		s.stopstate = STOP_SIGTERM;
 		alarm(1);
 		break;
 	case STOP_SIGTERM:
+		elog(LOG_INFO, 0, "kill SIGKILL %i", s.agentpid);
 		kill(s.agentpid, SIGKILL);
-		elog(LOG_INFO, 0, "killed SIGKILL");
 		s.stopstate = STOP_SIGKILL;
 		alarm(1);
 		break;
